@@ -1,0 +1,355 @@
+using Glob, DelimitedFiles, LinearAlgebra,Meshes,PlutoUI,GLMakie,TopoPlots
+
+function load_data(directory, N_r, N_theta, mu)
+    num_of_files = 0
+    for file in glob("*.dbl",directory)
+        num_of_files += 1
+    end
+    println("Number of files: ", num_of_files)
+
+    var = zeros(Float64, 9, num_of_files, N_r, N_theta)
+    N_points = N_r * N_theta
+    count = 1
+
+    for file in sort(glob("*.dbl",directory))
+        f = open(file, "r")
+		data = reinterpret(Float64, read(f))
+	    length(data)
+        for j in 1:9
+            temp = zeros(N_points)
+            for i in 1:N_points
+                temp[i] = data[i + (j - 1) * N_points]
+            end
+            temp = (reshape(temp, (N_r, N_theta)))
+			size(var)
+			size(temp)
+
+            var[j, count,:,:] .= temp
+        end
+        count += 1
+        close(f)
+    end
+
+    for i in 1:N_theta
+        var[5, :, :, i] += permutedims(2 * mu * cos(theta[i]) ./ (r .* r .* r))
+        var[5, :, :, i] .*= sqrt(4.0 * π)
+        var[6, :, :, i] .+= permutedims(mu * sin(theta[i]) ./ (r .* r .* r))
+        var[6, :, :, i] .*= sqrt(4.0 * π)
+    end
+    return var[1,:,:,:], var[2,:,:,:], var[3,:,:,:], var[4,:,:,:], var[5,:,:,:], var[6,:,:,:], var[7,:,:,:], var[8,:,:,:], var[9,:,:,:]
+end
+
+function stream_function(r, theta, B_r, B_theta; order=1)
+    N_r = length(r)
+    N_theta = length(theta)
+    print(N_theta)
+    # calculate derivatives of the stream function
+    dpsi_dr = zeros(N_r, N_theta)
+    dpsi_dtheta = zeros(N_r, N_theta)
+
+    for i in 1: N_theta
+		#print(size(B_theta[:, i]),2)
+		#print(size(-r .* sin(theta[i]) .* B_theta[:, i]),2)
+		#print(size(dpsi_dr[:, i]),2)
+        dpsi_dr[:, i] .= -r .* sin(theta[i]) .* B_theta[:, i]
+        dpsi_dtheta[:, i] .= r .* r .* sin(theta[i]) .* B_r[:, i]
+    end
+
+    # start at integrating at pole at inner radius, do all along pole, then do
+    # for each theta
+    psi = zeros(N_r, N_theta)
+    psi_2 = zeros(N_r, N_theta)
+    dtheta = zeros(N_theta)
+    dr = zeros(N_r)
+    if order >= 0
+        dr[2:end] .= r[2:end] .- r[1:end-1]
+        dtheta[2:end] .= theta[2:end] .- theta[1:end-1]
+        psi[2:end, 1] .= psi[1:end-1, 1] .+ dpsi_dr[2:end, 1] .* dr[2:end]
+
+        for i in 2:N_theta
+            psi[:, i] .= psi[:, i-1] .+ dpsi_dtheta[:, i] .* dtheta[i]
+        end
+    end
+
+    if order <= 0
+        dr[1:end-1] .= r[1:end-1] .- r[2:end]
+        dtheta[1:end-1] .= theta[1:end-1] .- theta[2:end]
+
+        for i in N_r-1:-1:1
+            psi_2[i, N_theta] = psi_2[i + 1, N_theta] .+ dpsi_dr[i, N_theta] .* dr[i]
+        end
+        for i in N_theta-1:-1:1
+            psi_2[:, i] .= psi_2[:, i+1] .+ dpsi_dtheta[:, i] .* dtheta[i]
+        end
+
+        if order < 0
+            return psi_2
+        else
+            psi .= 0.5 .* (psi .+ psi_2)  # Avg of the two
+        end
+    end
+    return psi
+end
+
+begin
+	function spherical_to_cartesian(r, theta)
+	    """
+	    Given 1D arrays for r and theta, the function makes a spherical (r,theta)
+	    grid and then transforms it to cartesian coordinates. It outputs two 2D
+	    arrays, one for x and one for z.
+	    """
+	    theta_matrix = repeat(transpose(theta), length(r), 1)
+	    radius_matrix = repeat(r, 1, length(theta))
+	    z = radius_matrix .* sin.(theta_matrix)
+	    y = radius_matrix .* cos.(theta_matrix)
+	    return z, y
+	end
+	
+	function spherical_to_cartesian_field(N_r, N_theta, theta, v_r, v_theta)
+	    """
+	    Given a vector field (v_r,v_theta) in spherical coordinates, the function
+	    outputs a field in cartesian coordinates.
+	    """
+	    v_x = zeros(N_r, N_theta)
+	    v_z = zeros(N_r, N_theta)
+	
+	    for i in 1:N_theta
+	        v_x[:, i] .= v_r[:, i] .* sin(theta[i]) .+ v_theta[:, i] .* cos(theta[i])
+	        v_z[:, i] .= v_r[:, i] .* cos(theta[i]) .- v_theta[:, i] .* sin(theta[i])
+	    end
+	    return v_x, v_z
+	end
+	
+	function spherical_to_cartesian_bfield(N_r, N_theta, theta, B_r, B_theta)
+	    """
+	    Given a vector field (B_r,B_theta) in spherical coordinates, the function
+	    outputs a field in cartesian coordinates.
+	    """
+	
+	    B_x = zeros(N_r, N_theta)
+	    B_z = zeros(N_r, N_theta)
+	
+	    for i in 1:N_theta
+	        B_x[:, i] .= B_r[:, i] .* sin(theta[i]) .+ B_theta[:, i] .* cos(theta[i])
+	        B_z[:, i] .= B_r[:, i] .* cos(theta[i]) .- B_theta[:, i] .* sin(theta[i])
+	    end
+	    return B_x, B_z
+	end
+end
+
+function alfven_surface(N_r, N_theta, theta, v_r, v_theta, B_r, B_theta, rho, tracer)
+    """
+    Given poloidal velocity field (vp) and poloidal magnetic field (bp), the function
+    calculates the Alfven surface. It is the surface for which vp = bp/sqrt{4*pi*rho}
+    """
+    v_x = zeros(N_r, N_theta)
+    v_z = zeros(N_r, N_theta)
+    print(typeof(N_theta))
+	for i in 1:N_theta
+        v_x[:, i] .= v_r[:, i] .* sin(theta[i]) .+ v_theta[:, i] .* cos(theta[i])
+        v_z[:, i] .= v_r[:, i] .* cos(theta[i]) .- v_theta[:, i] .* sin(theta[i])
+    end
+
+    B_x = zeros(N_r, N_theta)
+    B_z = zeros(N_r, N_theta)
+
+    for i in 1:N_theta
+        B_x[:, i] .= B_r[:, i] .* sin(theta[i]) .+ B_theta[:, i] .* cos(theta[i])
+        B_z[:, i] .= B_r[:, i] .* cos(theta[i]) .- B_theta[:, i] .* sin(theta[i])
+    end
+
+    vp2 = zeros(N_r, N_theta)
+    bp2 = zeros(N_r, N_theta)
+    alfsurf = zeros(N_r, N_theta)
+
+    for i in 1:N_theta
+        vp2[:, i] .= v_x[:, i] .* v_x[:, i] .+ v_z[:, i] .* v_z[:, i]
+        bp2[:, i] .= B_x[:, i] .* B_x[:, i] .+ B_z[:, i] .* B_z[:, i]
+        alfsurf[:, i] .= 4.0 * π * rho[:, i] .* vp2[:, i] ./ bp2[:, i]
+        if any(alfsurf[:, i] .> 1.0) && any(tracer[:, i] .> 0.1)
+            alfsurf[:, i] .= 0.0
+        end
+    end
+
+    return alfsurf
+end
+
+begin
+	function zerowanie(v, N_files, tracer)
+	    for e in 1:N_files
+	        for w in 1:100
+	            for q in 1:217
+	                if tracer[e, q, w] < 0.99
+	                    v[e, q, w] = 0
+	                end
+	            end
+	        end
+	    end
+	    return v
+	end
+	
+	function zerowanie2(v, N_files, tracer)
+	    for e in 1:N_files
+	        for w in 1:100
+	            for q in 1:217  # for red vectors!
+	                if tracer[e, q, w] > 0.0 || w < 0
+	                    v[e, q, w] = 0
+	                end
+	            end
+	        end
+	    end
+	    return v
+	end
+	
+	function zerowanie4(v, N_files, tracer)
+	    for e in 1:N_files
+	        for w in 1:100
+	            for q in 1:217
+	                if tracer[e, q, w] < 0.0001
+	                    v[e, q, w] = 0
+	                end
+	                # if w<0:#88
+	                #    v[e,q,w] = 0
+	            end
+	        end
+	    end
+	    return v
+	end
+	
+end
+
+begin
+	directory = "/home/raman/Videos/VelocPythJul/"
+	filebr = 10
+    skiphead = 57
+    skiphead2 = skiphead + 5
+    nout = readdlm(joinpath(directory, "save_dbl.out"), skipstart=filebr)[1]
+    SimTime = (readdlm(joinpath(directory, "save_dbl.out"))[:,2])[1:nout+1]
+	mu = readdlm(joinpath(directory, "pluto.ini"), skipstart=skiphead)[1,2]		
+	omg = readdlm(joinpath(directory, "pluto.ini"), skipstart=skiphead2)[1,2]
+	N_r = readdlm(joinpath(directory, "save_grid.out"), skipstart=9)[1]
+	N_theta = readdlm(joinpath(directory, "save_grid.out"), skipstart=N_r+10)[1]
+	r_left = readdlm(joinpath(directory, "save_grid.out"), skipstart=10)[:,2][1:N_r]
+	r_right = readdlm(joinpath(directory, "save_grid.out"), skipstart=10)[:,3][1:N_r]
+    theta_left = readdlm(joinpath(directory, "save_grid.out"), skipstart=N_r+11)[:,2][1:N_theta]
+	theta_right = readdlm(joinpath(directory, "save_grid.out"), skipstart=N_r+11)[:,3][1:N_theta]
+	r = r_left
+	theta = range(0, stop=(N_theta - 1) * (pi/1.98)/ N_theta, length=N_theta)
+	print(N_r)
+end
+
+rho, v_r, v_theta, v_phi, B_r, B_theta, B_phi, prs, tracer = load_data(directory, N_r, N_theta, mu)
+x, z = Matrix{Float32}.(spherical_to_cartesian(r, theta))
+t=N_files = size(rho,1)
+psi = zeros(Float64, N_files, N_r, N_theta);
+for i in 1:N_files
+    psi[i, :, :] = stream_function(r, theta, B_r[i, :, :], B_theta[i, :, :], order=1)
+end
+B_p = zeros(Float64, N_files, N_r, N_theta);
+B_p .= sqrt.(B_r.^2 .+ B_theta.^2)
+
+# Calculate poloidal velocity
+v_p = zeros(Float64, N_files, N_r, N_theta);
+v_p .= sqrt.(v_r.^2 .+ v_theta.^2)
+
+# Alfven surface
+alfsurf = zeros(N_files, N_r, N_theta);
+# Define N_files, N_r, N_theta, theta, v_r, v_theta, B_r, B_theta, rho, tracer
+for i in 1:N_files
+    alfsurf[i, :, :] = alfven_surface(N_r, N_theta, theta, v_r[i,:,:], v_theta[i,:,:], B_r[i,:,:], B_theta[i,:,:], rho[i,:,:], tracer[i,:,:])
+end
+begin
+	v_x =  zeros(Float64, N_files, N_r, N_theta)
+	v_z =  zeros(Float64, N_files, N_r, N_theta)
+	v2_x = zeros(Float64, N_files, N_r, N_theta)
+	v2_z = zeros(Float64, N_files, N_r, N_theta)
+	v3_x = zeros(Float64, N_files, N_r, N_theta)
+	v3_z = zeros(Float64, N_files, N_r, N_theta)
+	v4_x = zeros(Float64, N_files, N_r, N_theta)
+	v4_z = zeros(Float64, N_files, N_r, N_theta)
+	for i in 1:N_files
+        v_x[i, :, :], v_z[i, :, :] = spherical_to_cartesian_field(N_r, N_theta, theta, v_r[i, :, :], v_theta[i, :, :])
+    	v2_x[i, :, :], v2_z[i, :, :] = spherical_to_cartesian_field(N_r, N_theta, theta, v_r[i, :, :], v_theta[i, :, :])
+    	v3_x[i, :, :], v3_z[i, :, :] = spherical_to_cartesian_field(N_r, N_theta, theta, v_r[i, :, :], v_theta[i, :, :])
+    	v4_x[i, :, :], v4_z[i, :, :] = spherical_to_cartesian_field(N_r, N_theta, theta, v_r[i, :, :], v_theta[i, :, :])
+    end
+	dv = 10  # Filter for velocities, 1 is for plotting every vector
+	dv2 = 2
+	dvu = 217  # Unit velocity vectors - we do not want them to show inside compute.box plot
+	drv2 = 2
+	facv2 = 1
+	
+	drv21 = 1  # Filter for v2 for omitting gap between star and disk
+	facv1 = 2  # Scale factor for units of velocity in the corona
+	
+	dv4 = 4  # Filter for velocities, 1 is for plotting every vector
+	drv4 = 86  # Filter for v4, omitting gap between star and disk
+	facv4 = 80  # Scale factor for units of velocity in the disk
+	
+	x_lim = 20  # input('Enter xlim (max = %.2f): ' %r[-1])
+	y_lim = 10  # input('Enter ylim (max = %.2f): ' %r[-1])
+
+	v_x = zerowanie2(v_x, N_files, tracer)
+	v_z = zerowanie2(v_z, N_files, tracer)
+	
+	v2_x = zerowanie(v2_x, N_files, tracer)
+	v2_z = zerowanie(v2_z, N_files, tracer)
+	
+	v3_x = zerowanie(v2_x, N_files, tracer)
+	v3_z = zerowanie(v2_z, N_files, tracer)
+	
+	v4_x = zerowanie4(v4_x, N_files, tracer)
+	v4_z = zerowanie4(v4_z, N_files, tracer)
+	# Ignore division by zero errors
+	# Define functions for vector normalization and scaling
+function normalize_and_scale(vx, vz, facv)
+    N = sqrt.(vx.^2 + vz.^2)
+    vx_norm = ifelse.(isnan.(N), 0, vx ./ N)
+    vz_norm = ifelse.(isnan.(N), 0, vz ./ N)
+    vx_scaled = facv .* vx_norm .* N
+    vz_scaled = facv .* vz_norm .* N
+    return vx_scaled, vz_scaled
+end
+
+# Normalize and scale velocities for different cases
+v2_x, v2_z = normalize_and_scale(v2_x, v2_z, facv2)
+v_x, v_z = normalize_and_scale(v_x, v_z, facv1)
+v4_x, v4_z = normalize_and_scale(v4_x, v4_z, facv4)
+
+# Normalize and scale velocities for velocity units plot only
+N = sqrt.(v_x.^2 + v_z.^2)
+v_xunit = ifelse.(isnan.(N), 0, v_x ./ N)
+v_zunit = ifelse.(isnan.(N), 0, v_z ./ N)
+
+# Define plot labels and titles
+xlabel = L"\mathbf{r/R}_{\star}"
+ylabel = L"\mathbf{z/R}_{\star}"
+title = [L"Title"]
+
+# Define contour levels
+contour_levels = [0.01, 0.10, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 1.0, 1.2, 1.5]
+
+
+# Calculate the Stokes stream function of the magnetic field
+end;
+
+begin
+	grd = StructuredGrid(x, z)
+	set_theme!(backgroundcolor = :gray90)
+	function safe_log(x)
+    	if x == 0
+        	return 1
+    	else
+        	return log(x)
+    	end
+	end
+	z_log = safe_log.(vec(rho[t,:,:].*v_p[t,:,:]))
+	fig, ax, plt = Meshes.viz(grd, color=z_log, colorscheme=:jet)
+	#contour!(plt, psi[t,:,:], labels=true, levels =contour_levels, color=:white)
+	contour!(plt, alfsurf[t,:,:], levels =[1],color=:red)
+	colsize!(fig.layout, 1, Aspect(1, 1.0))
+	#xlims!(ax, 0, 20)
+	#ylims!(ax, 0, 10)
+	Colorbar(fig[1,2])
+	fig
+end
