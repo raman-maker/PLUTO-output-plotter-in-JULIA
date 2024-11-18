@@ -42,7 +42,7 @@ end
 function stream_function(r, theta, B_r, B_theta; order=1)
     N_r = length(r)
     N_theta = length(theta)
-    print(N_theta)
+    println("N_theta: ",N_theta)
     # calculate derivatives of the stream function
     dpsi_dr = zeros(N_r, N_theta)
     dpsi_dtheta = zeros(N_r, N_theta)
@@ -144,7 +144,7 @@ function alfven_surface(N_r, N_theta, theta, v_r, v_theta, B_r, B_theta, rho, tr
     """
     v_x = zeros(N_r, N_theta)
     v_z = zeros(N_r, N_theta)
-    print(typeof(N_theta))
+
 	for i in 1:N_theta
         v_x[:, i] .= v_r[:, i] .* sin(theta[i]) .+ v_theta[:, i] .* cos(theta[i])
         v_z[:, i] .= v_r[:, i] .* cos(theta[i]) .- v_theta[:, i] .* sin(theta[i])
@@ -219,7 +219,7 @@ begin
 end
 
 begin
-	directory = "/home/raman/Videos/VelocPythJul/"
+	directory = "/home/raman/Videos/VelocPythJul"
 	filebr = 10
     skiphead = 57
     skiphead2 = skiphead + 5
@@ -235,7 +235,7 @@ begin
 	theta_right = readdlm(joinpath(directory, "save_grid.out"), skipstart=N_r+11)[:,3][1:N_theta]
 	r = r_left
 	theta = range(0, stop=(N_theta - 1) * (pi/1.98)/ N_theta, length=N_theta)
-	print(N_r)
+	println(N_r)
 end
 
 rho, v_r, v_theta, v_phi, B_r, B_theta, B_phi, prs, tracer = load_data(directory, N_r, N_theta, mu)
@@ -348,8 +348,16 @@ begin
 	#contour!(plt, psi[t,:,:], labels=true, levels =contour_levels, color=:white)
 	contour!(plt, alfsurf[t,:,:], levels =[1],color=:red)
 	colsize!(fig.layout, 1, Aspect(1, 1.0))
-	#xlims!(ax, 0, 20)
-	#ylims!(ax, 0, 10)
+	# Set exact axis limits based on the grid ranges
+    xlims!(ax, minimum(x), maximum(x))
+    ylims!(ax, minimum(z), maximum(z))
 	Colorbar(fig[1,2])
-	fig
+	
+    # Optional: Save the figure
+    save("plot.png", fig)
+    # Display the plot
+    display(fig)
+    # Keep the session alive
+    println(" Press Enter to exit...")
+    readline()  # Wait for user input
 end
