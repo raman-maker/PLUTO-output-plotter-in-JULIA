@@ -1,11 +1,11 @@
 # Import necessary libraries
-using Glob, DelimitedFiles, LinearAlgebra, Meshes, GLMakie, Contour
+using Glob, DelimitedFiles, LinearAlgebra, Meshes, GLMakie, Contour, StaticArrays
 
-directory = "/home/raman/Downloads/MHDrunVelocs/"
+directory = "/home/raman/Videos/RamanNkS/"
+#directory = "/home/raman/Downloads/Data2/"
 
-function load(directory::String)::Tuple{Int64, Vector{Float64}, Int64, Int64, Vector{Float64}, Vector{Float64}, Float64, Int64}
-    nout::Int64 = readdlm(joinpath(directory, "dbl.out"), skipstart=3)[1]
-    SimTime::Vector{Float64} = (readdlm(joinpath(directory, "dbl.out"))[:,2])[1:nout+1]
+function load(directory::String)::Tuple{Vector{Float64}, Int64, Int64, Vector{Float64}, Vector{Float64}, Float64, Int64}
+    SimTime::Vector{Float64} = (readdlm(joinpath(directory, "dbl.out"))[:,2])
 	puto::String = read(joinpath(directory,"pluto.ini"), String) 
 	N_r::Int64 = readdlm(joinpath(directory, "grid.out"), skipstart=9)[1]
 	N_θ::Int64 = readdlm(joinpath(directory, "grid.out"), skipstart=N_r+10)[1]
@@ -14,113 +14,135 @@ function load(directory::String)::Tuple{Int64, Vector{Float64}, Int64, Int64, Ve
 	r::Vector{Float64} = Float64.(r_left)
     θ_left::Vector{Float64} = readdlm(joinpath(directory, "grid.out"), skipstart=N_r+11)[:,2][1:N_θ]
 	θ_right::Vector{Float64} = readdlm(joinpath(directory, "grid.out"), skipstart=N_r+11)[:,3][1:N_θ]
-	θ::Vector{Float64} = collect(range(0, stop=(N_θ - 1) * (pi/1.98)/ N_θ, length=N_θ))
+	#θ = θ_left
+	θ::Vector{Float64} = collect(range(0, π, N_θ))
 	μ::Float64 = tryparse(Float64,match(r"(MU) +((\d+\.?)(\d+)?)",puto).captures[2])
 	defn::String = read(joinpath(directory,"definitions.h"), String)
 	Physics::SubString{String} = match(r" +(M?HD) ?",defn).captures[1]
 	dms::Int64 = Physics == "MHD" ? 9 : Physics == "HD" ? 6 : error("Unknown type of Physics")
 	@show N_r
 	@show N_θ
+	@show size(r)
+	@show size(θ)
 	@show μ
 	@show Physics
-	@show (typeof(r))
-	@show (typeof(θ))
-	return nout, SimTime, N_r, N_θ, r, θ, μ, dms
+	return SimTime, N_r, N_θ, r, θ, μ, dms
 end
-nout, SimTime, N_r, N_θ, r, θ, μ, dms = load(directory)
+SimTime, N_r, N_θ, r, θ, μ, dms = load(directory)
 
-@inline function precompute_trig(θ)
+function precompute_trig(θ)
     sinθ = sin.(θ)
     cosθ = cos.(θ)
     return sinθ, cosθ
 end
 
 # ============================= Main =================================
-function main(directory::String, N_r::Int64, N_θ::Int64, r::Vector{Float64}, θ::Vector{Float64}, μ::Float64, dms::Int64)
+function main(directory::String, N_r::Int64, N_θ::Int64, r::Vector{Float64}, θ::Vector{Float64}, μ::Float64, dms::Int64, SimTime::Vector{Float64})
 	flag::Bool = false  # Initialize the flag
-    ρ, v_r, v_θ, v_phi, B_r, B_θ, B_phi, prs, tracer, v, B_p, v_p, v_x, v_z, B_x, B_z, vp2, bp2, alfsurf, dΨ_dr, dΨ_dθ, Ψ, Ψ_2 = [zeros(Float64,N_r,N_θ) for _ in 1:23]
+    ρ, v_r, v_θ, v_phi, B_r, B_θ, B_phi, prs, tracer, v, B_p, v_p, v_x, v_z, B_x, B_z, vp2, bp2, alfsurf, dΨ_dr, dΨ_dθ, Ψ, Ψ_2 = [zeros(Float64, N_r, N_θ) for _ in 1:23]
     # Initialize 1D arrays for stream function and its derivatives
     dθ = zeros(Float64, N_θ)
 	dr = zeros(Float64, N_r)
-	sinθ, cosθ= precompute_trig(θ)
-	x,z = spherical_to_cartesian(r, θ, cosθ, sinθ)
+	data = zeros(Float64, N_r*N_θ*dms)
+    var = zeros(Float64, dms, N_r, N_θ)
+	Mt, Jt = Float64[], Float64[]
+    ΣṀ, ΣJ̇ = zero(Float64), zero(Float64)
+    siz = size(var)
+	sinθ, cosθ = @inline precompute_trig(θ)
+	x,z = @inline spherical_to_cartesian(r, θ, cosθ, sinθ)
 	sub_folder = "PLOTS"
 	sub_folder_path = joinpath(directory, sub_folder)
 	mkpath(sub_folder_path)
 	grd = StructuredGrid(x, z)
 	fig2, ax, plt = viz(grd, showsegments = true, segmentcolor = :teal)
-	colsize!(fig2.layout, 1, Aspect(1, 1.0))
+	ax.xlabel = "x"
+	ax.ylabel = "z"
+	asp::Float64 = last(θ) < 1.5 ? 1.0 : 0.5
+	colsize!(fig2.layout, 1, Aspect(1,asp))
 	save(joinpath(sub_folder_path,"grid.png"), fig2)
     for file in sort(glob("*.dbl",directory))
-		ρ, v_r, v_θ, v_phi, B_r, B_θ, B_phi, prs, tracer = load_data(directory,file,dms,N_r,N_θ,μ,r,θ,cosθ,sinθ)
-		file::String = match(r"(\d+)",file).captures[1]
-		v_x, v_z, B_x, B_z = spherical_to_cartesian_field(v_x, v_z, B_x, B_z, v_r, v_θ, B_r, B_θ, sinθ, cosθ)
-		
+		ρ, v_r, v_θ, v_phi, B_r, B_θ, B_phi, prs, tracer = @inline load_data!(data,directory,var,siz,file,dms,N_r,N_θ,μ,r,θ,cosθ,sinθ)
+		file::String = match(r"data\.(\d+)\.dbl",file).captures[1]
+		v_x, v_z, B_x, B_z = @inline spherical_to_cartesian_field!(v_x, v_z, B_x, B_z, v_r, v_θ, B_r, B_θ, sinθ, cosθ)
+		# Calculate the Stokes stream function of the magnetic field
 		Ψ = stream_function!(N_r, N_θ, dr, dθ, Ψ, Ψ_2, dΨ_dr, dΨ_dθ, B_r, B_θ, r, θ, cosθ, sinθ; order=1)
 		alfsurf = alfven_surface!(v_x, v_z, B_x, B_z, sinθ, cosθ, vp2, bp2, alfsurf, ρ, tracer)
 		# Calculate poloidal magnetic field and velocity
 		@. B_p = sqrt(B_r^2 + B_θ^2)
 		@. v_p = sqrt(v_r^2 + v_θ^2)
 		
-	# Calculate the Stokes stream function of the magnetic field
+
+		Ṁ = @. -ρ*v_r*4*π *(r^2)*sinθ'*dθ'
+		sM = sum(Ṁ)
+		push!(Mt,sM)
+		ΣṀ+= sM
+		J̇ = @. r^3*(-4*π*ρ*v_r*v_phi + B_r*B_phi)*sinθ'^2*dθ'
+		sJ = sum(J̇)
+		push!(Jt,sJ)
+		ΣJ̇ += sJ
 		if !flag
 		    println("Number of dbl files = ",length(sort(glob("*.dbl",directory))))
-		    @show (size(ρ))
-		    @show (size(v_r))
-		    @show (size(v_θ))
-		    @show (size(v_phi))
-		    @show (size(B_r))
-		    @show (size(B_θ))
-		    @show (size(B_phi))
-		    @show (size(prs))
-		    @show (size(tracer))
-		    @show (size(grd))
+		    @show size(ρ)
+		    @show size(v_r)
+		    @show size(v_θ)
+		    @show size(v_phi)
+		    @show size(B_r)
+		    @show size(B_θ)
+		    @show size(B_phi)
+		    @show size(prs)
+		    @show size(tracer)
 			flag = true  # Set the flag to true
 		end
 		
 		safe_log(x::Float64) = x > 0 ? log(x) : 1.0
 		# Insert variable that you want to plot in z_log function.
-		z_log = safe_log.(Ψ)
+		z_log = safe_log.(B_p)
 
 		fig, ax, plt = Meshes.viz(grd, color=vec(z_log), colorscheme=:jet)
-		ctrange = (minimum(z_log), maximum(z_log))
+		ctrange = (minimum(z_log), maximum(z_log))	
 		for cl in Contour.levels(Contour.contours(x, z, z_log, 10))
 			lvl = Contour.level(cl) # the z-value of this contour level
 			for line in Contour.lines(cl)
 				xs, ys = Contour.coordinates(line) # coordinates of this line segment
-				lines!(ax, xs, ys, color=lvl, colorrange=ctrange, colormap=:jet) # pseudo-code; use whatever plotting package you prefer
+				lines!(ax, xs, ys, color=lvl, colorrange=ctrange, colormap=:jet)
 				#text!(ax,position=Point2f0(mean(xs), mean(ys)), string(round(lvl, digits=2)), align = (:center, :center))
 			end
-		end
-
-		colsize!(fig.layout, 1, Aspect(1, 1.0))
+		end	
+		colsize!(fig.layout, 1, Aspect(1,asp))
 		# Add axis labels and title directly
-		ax.title = "Density and Contour Plot (File $file)"
+		#ax.title = "B_p and Contour Plot (data.$file)"
 		ax.xlabel = L"x_{R}" 
 		ax.ylabel = L"z_{R}" 
 		# Add a colorbar with a title
 		cbar = Colorbar(fig[1, 2])
-		cbar.label = "log(ρ)"
+		cbar.label = L"log(B_p)"
 		# Set exact axis limits based on the grid ranges
 		xlims!(ax, minimum(x), maximum(x))
 		ylims!(ax, minimum(z), maximum(z))
 		save(joinpath(sub_folder_path,"data1.$(file).png"), fig)
 	end
+	@show size(Mt)
+	@show ΣJ̇
+	# Create the figure and axis
+	fig = Figure(size = (800, 600))
+	ax = Axis(fig[1, 1], xlabel = "Time", ylabel = "Flux")
+	# Plot
+	Jline = lines!(ax, SimTime, Jt, color = :blue, linewidth = 2)
+	Mline = lines!(ax, SimTime, Mt, color = :red, linewidth = 2, label = "Ṁ")
+	Legend(fig[1, 2], [Jline, Mline], ["J̇", "Ṁ"])
+	# Save the figure
+	save(joinpath(sub_folder_path,"J̇_vs_time.png"), fig)
+	#plot(SimTime, Jt, label="Ṁ", color=:red)
 end
 # ==============================end of Main=================================
 
 # ============================= Functions ==================================
-function load_data(directory, file, dms, N_r, N_θ, μ, r, θ, cosθ, sinθ)::NTuple{9, Array{Float64, 2}}
-    f = open(file, "r")
-    data = reinterpret(Float64, read(f))
+function load_data!(data, directory, var, siz, file, dms, N_r, N_θ, μ, r, θ, cosθ, sinθ)::NTuple{9, Array{Float64, 2}}
+	f = open(file, "r")
+	read!(f, data)    # From file f read only starting elements of size data array
     close(f)
     
-    N_points = N_r * N_θ   # 5450
-    dt = data[1:dms * N_points]
-    
-    var = zeros(Float64, dms, N_r, N_θ)  # Initialize 9 matrices by default
-    siz = size(var)
-    permutedims!(var, reshape(dt, siz[2], siz[3], siz[1]), (3, 1, 2))
+    permutedims!(var, reshape(data, siz[2], siz[3], siz[1]), (3, 1, 2))
     # Apply operations on var[5] and var[6]
     @. var[5, :, :] += (2 * μ * cosθ' / (r * r * r))
     @. var[5, :, :] *= sqrt(4.0 * π)
@@ -131,8 +153,8 @@ function load_data(directory, file, dms, N_r, N_θ, μ, r, θ, cosθ, sinθ)::NT
     if dms == 9
         return var[1,:,:], var[2,:,:], var[3,:,:], var[4,:,:], var[5,:,:], var[6,:,:], var[7,:,:], var[8,:,:], var[9,:,:]
     elseif dms == 6
-        zeros_matrices = [zeros(Float64, N_r, N_θ) for _ in 1:3]  # Create 3 zero matrices
-        return var[1,:,:], var[2,:,:], var[3,:,:], var[4,:,:], var[5,:,:], var[6,:,:], zeros_matrices[1], zeros_matrices[2], zeros_matrices[3]
+		zeros_matrix = zeros(Float64, N_r, N_θ) 
+        return var[1,:,:], var[2,:,:], var[3,:,:], var[4,:,:], var[5,:,:], var[6,:,:], zeros_matrix, zeros_matrix, zeros_matrix
     else
         error("Unsupported dms value: $dms")
     end
@@ -172,18 +194,18 @@ function stream_function!(N_r, N_θ, dr, dθ, Ψ, Ψ_2, dΨ_dr, dΨ_dθ, B_r, B_
 end
 
 
-@inline function spherical_to_cartesian(r, θ, cosθ, sinθ)::NTuple{2, Array{Float64, 2}}
+function spherical_to_cartesian(r, θ, cosθ, sinθ)::NTuple{2, Array{Float64, 2}}
     """
     Given 1D arrays for r and θ, the function makes a spherical (r,cos/sinθ)
     grid and then transforms it to cartesian coordinates. It outputs two 2D
     arrays, one for x and one for z.
     """
-    x = @. r*cosθ'
-    z = @. r*sinθ'
+    x = @. r*sinθ'
+    z = @. r*cosθ'
     return x,z
 end
 
-@inline function spherical_to_cartesian_field(v_x, v_z, B_x, B_z, v_r, v_θ, B_r, B_θ, sinθ, cosθ)::NTuple{4, Array{Float64, 2}}
+function spherical_to_cartesian_field!(v_x, v_z, B_x, B_z, v_r, v_θ, B_r, B_θ, sinθ, cosθ)::NTuple{4, Array{Float64, 2}}
 	# Vectorized calculation of velocity and magnetic field components
 	@. v_x = v_r * sinθ' + v_θ * cosθ'
 	@. v_z = v_r * cosθ' - v_θ * sinθ'
@@ -192,7 +214,7 @@ end
     return v_x, v_z, B_x, B_z
 end
 
-@inline function alfven_surface!(v_x, v_z, B_x, B_z, sinθ, cosθ, vp2, bp2, alfsurf, ρ, tracer)::Array{Float64, 2}
+function alfven_surface!(v_x, v_z, B_x, B_z, sinθ, cosθ, vp2, bp2, alfsurf, ρ, tracer)::Array{Float64, 2}
     """
     Given poloidal velocity field (vp) and poloidal magnetic field (bp), the function
     calculates the Alfven surface. It is the surface for which vp = bp/sqrt{4*pi*ρ}
@@ -208,4 +230,4 @@ end
 end
 
 # =============================End of Functions =================================
-@time main(directory, N_r, N_θ, r, θ, μ, dms)
+@timev main(directory, N_r, N_θ, r, θ, μ, dms, SimTime)
