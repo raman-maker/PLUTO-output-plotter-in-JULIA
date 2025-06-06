@@ -12,7 +12,7 @@ function load(directory::String)::Tuple{Vector{Float64}, Int64, Int64, Vector{Fl
 	r_left::Vector{Float64} = readdlm(joinpath(directory, "grid.out"), skipstart=10)[:,2][1:N_r]
 	r_right::Vector{Float64} = readdlm(joinpath(directory, "grid.out"), skipstart=10)[:,3][1:N_r]
 	r::Vector{Float64} = Float64.(r_left)
-    θ_left::Vector{Float64} = readdlm(joinpath(directory, "grid.out"), skipstart=N_r+11)[:,2][1:N_θ]
+	θ_left::Vector{Float64} = readdlm(joinpath(directory, "grid.out"), skipstart=N_r+11)[:,2][1:N_θ]
 	θ_right::Vector{Float64} = readdlm(joinpath(directory, "grid.out"), skipstart=N_r+11)[:,3][1:N_θ]
 	#θ = θ_left
 	θ::Vector{Float64} = collect(range(0, π, N_θ))
