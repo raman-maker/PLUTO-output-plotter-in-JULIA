@@ -71,7 +71,6 @@ function main(directory::String, N_r::Int64, N_θ::Int64, r::Vector{Float64}, θ
 		@. B_p = sqrt(B_r^2 + B_θ^2)
 		@. v_p = sqrt(v_r^2 + v_θ^2)
 		
-
 		Ṁ = @. -ρ*v_r*4*π *(r^2)*sinθ'*dθ'
 		sM = sum(Ṁ)
 		push!(Mt,sM)
@@ -93,14 +92,10 @@ function main(directory::String, N_r::Int64, N_θ::Int64, r::Vector{Float64}, θ
 		    @show size(tracer)
 			flag = true  # Set the flag to true
 		end
-		
-		safe_log(x::Float64) = x > 0 ? log(x) : 1.0
-		# Insert variable that you want to plot in z_log function.
-		z_log = safe_log.(B_p)
-
-		fig, ax, plt = Meshes.viz(grd, color=vec(z_log), colorscheme=:jet)
-		ctrange = (minimum(z_log), maximum(z_log))	
-		for cl in Contour.levels(Contour.contours(x, z, z_log, 10))
+		## Supply in COLOR the variable you want to plot.
+		fig, ax, plt = Meshes.viz(grd, color=vec(B_p), colorscheme=:jet)
+		ctrange = (minimum(B_p), maximum(B_p))	
+		for cl in Contour.levels(Contour.contours(x, z, B_p, 10))
 			lvl = Contour.level(cl) # the z-value of this contour level
 			for line in Contour.lines(cl)
 				xs, ys = Contour.coordinates(line) # coordinates of this line segment
@@ -132,7 +127,6 @@ function main(directory::String, N_r::Int64, N_θ::Int64, r::Vector{Float64}, θ
 	Legend(fig[1, 2], [Jline, Mline], ["J̇", "Ṁ"])
 	# Save the figure
 	save(joinpath(sub_folder_path,"J̇_vs_time.png"), fig)
-	#plot(SimTime, Jt, label="Ṁ", color=:red)
 end
 # ==============================end of Main=================================
 
